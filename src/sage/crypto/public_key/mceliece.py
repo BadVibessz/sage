@@ -147,6 +147,19 @@ def _inverse_by_mod(poly, mod):
     OUTPUT:
 
     - polynomial `f` that satisfies poly(x) * f(x) == 1 mod(mod(x))
+
+    EXAMPLES::
+
+    sage: from sage.crypto.public_key.mceliece import _inverse_by_mod
+
+    sage: F = GF(2^4, 'a');
+    sage: R.<x> = F[]
+    sage: RR.<a> = F
+
+    sage: f = x^5 + (a^3 + a^2)*x^4 + (a^2 + a + 1)*x^3 + (a^3 + a^2 + 1)*x^2 + (a^3 + a^2 + a)*x + a^3 + a^2 + 1
+    sage: g = x^2 + (a^3 + a^2)*x + a^3
+    sage: _inverse_by_mod(f, g)
+    (a^3 + a^2)*x + a^3 + 1
     """
     return xgcd(poly, mod)[1]
 
@@ -163,7 +176,19 @@ def _random_irreducible_polynomial(R, d):
 
     - irreducible polynomial over R
 
-    TODO, EXPAMPLES::
+    EXPAMPLES::
+
+    sage: from sage.crypto.public_key.mceliece import _random_irreducible_polynomial
+
+    sage: F = GF(2^4, 'a');
+    sage: R.<x> = F[]
+    sage: RR.<a> = F
+
+    sage: f = _random_irreducible_polynomial(R, 5); f
+    x^5 + (a^3 + a^2)*x^4 + (a^2 + a + 1)*x^3 + (a^3 + a^2 + 1)*x^2 + (a^3 + a^2 + a)*x + a^3 + a^2 + 1
+
+    f.is_irreducible()
+    True
     """
     var = R.gen()
 
@@ -179,8 +204,6 @@ class McEliece(PublicKeyCryptosystem):
     r"""
     // todo:
     """
-
-    # TODO, McEliece should accept only n, k, t and then randomly generate g, L!
 
     def __init__(self, n, k, t):
         """
@@ -203,26 +226,51 @@ class McEliece(PublicKeyCryptosystem):
        // TODO: ??
        """
 
-        # TODO: из соотношения k >= n - mt можно найти m и, следовательно, F -> R
-        # k >= n - mt, -k <= mt - n, mt <= n - k, m <= (n - k) / t
+        # we know that k >= n - mt > 0, thus (n - k) / t <= m < n / t
+        # also m must satisfy n - mt >= k, as our Goppa code will have k' = n - mt dimension
+        # and this k' must be greater or equals provided `k` parameter 
+        # TODO: some validation for n, k, t
 
-        F = GF(2**floor((n - k) / t))
+        if n <= 0 or k <= 0 or t <= 0:
+            raise Exception("Parameters should be positive.")
 
-        self.R = PolynomialRing(F, 'x')
+        if k >= n:
+            raise Exception("K should be less than n.")
 
-        self.g = _random_irreducible_polynomial(self.R,t)
-        self.L = [a for a in random.sample(F.list(), n) if self.g(a) != 0]
+        m = floor((n - k) / t)
+        q = 2**m
 
-        self.C = codes.GoppaCode(self.g, self.L)
+        # make sure that field contains at least `n` elements
+        while q < n:
+            m = m + 1
+            q = 2**m
+
+        if n - m*t <= 0 or n - m*t < k:
+            raise Exception("Invalid parameters") # TODO: read about exceptions in sage dev guide
+
 
         # public parameters
         self.n = n
         self.k = k
         self.t = t
 
-        self.H = self.C.parity_check_matrix()
-        self.G = self.C.generator_matrix()
+        F = GF(q)
 
+        self.R = PolynomialRing(F, 'x')
+
+        self.g = _random_irreducible_polynomial(self.R, t)
+        self.L = [a for a in random.sample(F.list(), n) if self.g(a) != 0]
+
+        self.C = codes.GoppaCode(self.g, self.L)
+
+        # remove (dim - k) last rows of C.generator_matrix() to accept messages of length `k`
+        dim = self.C.dimension()
+        
+        if k == dim:
+            self.G = self.C.generator_matrix()
+        else: 
+            self.G = self.C.generator_matrix().delete_rows([i for i in range(k, dim)])
+        
         r = len(self.G.rows())
         c = len(self.G.columns())
 
@@ -253,32 +301,18 @@ class McEliece(PublicKeyCryptosystem):
         EXAMPLES::
 
         sage: from sage.crypto.public_key.mceliece import McEliece
-        sage: F = GF(2^4, 'a');
-        sage: R.<x> = F[]
-        sage: RR.<a> = F
-        sage: g = x^2 + x + a^3
-        sage: L = F.list()
-
-        sage: mc1 = McEliece(g, L)
-        sage: mc2 = McEliece(g, L)
-
+        sage: mc1 = McEliece(16, 8, 2)
+        sage: mc2 = McEliece(32, 12, 4)
         sage: mc1 == mc2
-        True
+       
+        False
 
 
         sage: from sage.crypto.public_key.mceliece import McEliece
-        sage: F = GF(2^4, 'a');
-        sage: R.<x> = F[]
-        sage: RR.<a> = F
-        sage: g = x^2 + x + a^3
-        sage: L1 = F.list()
-        sage: L2 = [F.list()[i] for i in range(10) if g(a) != 0]
-
-        sage: mc1 = McEliece(g, L1)
-        sage: mc2 = McEliece(g, L2)
-
-        sage: mc1 == mc2
-        False
+        sage: mc = McEliece(16, 8, 2)
+        sage: mc == mc
+       
+        True
         """
         return repr(self) == repr(other)
 
@@ -293,35 +327,29 @@ class McEliece(PublicKeyCryptosystem):
         EXAMPLES::
 
         sage: from sage.crypto.public_key.mceliece import McEliece
-        sage: F = GF(2^4, 'a');
-        sage: R.<x> = F[]
-        sage: RR.<a> = F
-        sage: g = x^2 + x + a^3
-        sage: L = F.list()
-
-        sage: mc = McEliece(g, L); mc
+        sage: mc = McEliece(16, 8, 2); mc
 
         McEliece cryptosystem with parameters (16, 8, 2)
         over [16, 8] Goppa code over GF(2)
-        over Univariate Polynomial Ring in x over Finite Field in a of size 2^4
+        over Univariate Polynomial Ring in x over Finite Field in z4 of size 2^4
         with code locators:
-        0
-        a
-        a^2
-        a^3
-        a + 1
-        a^2 + a
-        a^3 + a^2
-        a^3 + a + 1
-        a^2 + 1
-        a^3 + a
-        a^2 + a + 1
-        a^3 + a^2 + a
-        a^3 + a^2 + a + 1
-        a^3 + a^2 + 1
-        a^3 + 1
+        z4 + 1
+        z4^3 + z4^2 + 1
+        z4
         1
-        and Goppa polynomial x^2 + x + a^3
+        z4^2
+        z4^3 + z4^2 + z4 + 1
+        0
+        z4^3 + z4^2
+        z4^2 + z4 + 1
+        z4^2 + z4
+        z4^2 + 1
+        z4^3 + z4^2 + z4
+        z4^3 + z4
+        z4^3 + 1
+        z4^3
+        z4^3 + z4 + 1
+        and Goppa polynomial x^2 + (z4 + 1)*x + z4^3 + z4^2
         """
 
         code_locators = ""
@@ -358,25 +386,13 @@ class McEliece(PublicKeyCryptosystem):
         EXAMPLES::
 
         sage: from sage.crypto.public_key.mceliece import McEliece
-        sage: F = GF(2^4, 'a');
-        sage: R.<x> = F[]
-        sage: RR.<a> = F
-        sage: g = x^2 + x + a^3
-        sage: L = F.list()
-
-        sage: mc = McEliece(g, L)
+        sage: mc = McEliece(16, 8, 2)
         sage: mc.parameters()
         (16, 8, 2)
 
 
         sage: from sage.crypto.public_key.mceliece import McEliece
-        sage: F = GF(2^5, 'a');
-        sage: R.<x> = F[]
-        sage: RR.<a> = F
-        sage: g = x^3 + (a^4 + a^2 + a + 1)*x^2 + (a^4 + a^3 + a^2 + 1)*x + a^4 + a^2 + a
-        sage: L = [a for a in F.list() if g(a) != 0]
-
-        sage: mc = McEliece(g, L)
+        sage: mc = McEliece(16, 8, 2)
         sage: mc.parameters()
         (32, 17, 3)
         """
@@ -392,6 +408,15 @@ class McEliece(PublicKeyCryptosystem):
         - The McEliece public key as tuple (``S * G * P``, ``t``)
 
         // todo:
+
+        EXAMPLES::
+
+        sage: mc = McEliece(8, 4, 1)
+        sage: mc.public_key()
+        
+        ([1 0 0 1 1 1 1]   
+         [0 1 0 1 1 1 0]   
+         [1 0 1 1 1 0 0], 1)
         """
         return (self.GG, self.t)
 
@@ -404,10 +429,20 @@ class McEliece(PublicKeyCryptosystem):
 
         - The McEliece private key as tuple (``g``, ``G``, ``S``, ``P``)
 
+
+        EXAMPLES::
+
+        (
+                                                            [0 1 0 0 0 0 0]
+                                                            [1 0 0 0 0 0 0]
+                                                            [0 0 0 0 0 1 0]
+                                                            [0 0 1 0 0 0 0]
+                                  [1 0 0 0 1 1 0]  [1 0 0]  [0 0 0 1 0 0 0]
+                                  [0 1 0 1 1 0 1]  [1 0 1]  [0 0 0 0 1 0 0]
+        x + z4^3 + z4^2 + z4 + 1, [0 0 1 0 1 0 1], [0 1 0], [0 0 0 0 0 0 1]
+        )
         // todo:
         """
-
-
         return (self.g, self.G, self.S, self.P)
 
 
@@ -423,8 +458,17 @@ class McEliece(PublicKeyCryptosystem):
 
         - ciphertext ``m * S * G * P`` + ``e`` where ``e`` - is a random error vector of length ``n`` and hamming weight <= ``t``
 
+
+        EXAMPLES::
+        sage: mc = McEliece(16, 8, 2)
+        sage: m = vector(GF(2), [0,1,0,0,1,1,0,1])
+        sage: mc(m)
+
+        (1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1)
         // todo:
         """
+        #TODO: if k < n - mt -> message m should have (n - mt) - k trailing zeros?
+        # or maybe just cut off (n - mt) - k trailing rows of C.gen_matrix?
         return m * self.GG + _random_binary_err_vector(self.n, self.t)
 
     @classmethod
@@ -443,6 +487,14 @@ class McEliece(PublicKeyCryptosystem):
         - ciphertext ``m * S * G * P`` + ``e`` where ``e`` - is a random error vector of length ``n`` and hamming weight <= ``t``
 
         // todo:
+
+        EXAMPLES::
+
+        sage: mc = McEliece(20, 10, 2)
+        sage: m = vector(GF(2), [1,1,1,0,1,1,0,0,0,1])
+        sage: McEliece.encrypt(m, mc.public_key(), n)
+
+        (1, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0)
         """
         (GG, t) = k        
 
@@ -460,6 +512,18 @@ class McEliece(PublicKeyCryptosystem):
 
         - synrome polynomial of form: sum_{i=0}_{n-1} (c_{i} / (x - L_{i})) mod g(x)
 
+        EXAMPLES:
+
+        sage: mc = McEliece(16, 8, 2)
+        sage: m = vector(GF(2), [1,1,0,1,1,0,0,0])
+        sage: c = mc(m)
+        sage: print(c)
+
+        (1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1)
+
+        sage: mc._calculate_syndrome(c)
+
+        (z4^3 + z4^2)*x + z4^3 + z4^2 + z4 + 1
         """
         if self.n != len(c):
             raise Exception("len(L) != len(c)")
@@ -493,22 +557,16 @@ class McEliece(PublicKeyCryptosystem):
         solving matrix equation c' - e' = m * s * G we find m * S
         result of m * S * S^(-1) is the plaintext
         // todo:
+
+        EXAMPLES::
+
+        sage: mc = McEliece(16, 8, 2)
+        sage: m = vector(GF(2), [1,0,1,1,0,0,0,1])
+        sage: mc.decrypt(mc(m))
+        
+        (1, 0, 1, 1, 0, 0, 0, 1)
         """
         c = c * self.P.inverse()
         c = c + _get_errors(self.R, self.L, self._calculate_syndrome(c), self.g)
 
         return self.G.solve_left(c) * self.S.inverse()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
